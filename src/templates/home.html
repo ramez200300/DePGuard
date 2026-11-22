@@ -9,36 +9,54 @@
   <nav class="navbar navbar-dark bg-dark mb-4">
     <div class="container">
       <a class="navbar-brand" href="/">DePGuard</a>
-      <a class="btn btn-outline-light btn-sm" href="/new">New scan</a>
+      <a class="btn btn-primary" href="/new">+ New Scan</a>
     </div>
   </nav>
   <div class="container">
     <h1 class="h4 mb-3">Scans</h1>
     {% if scans %}
-    <table class="table table-striped bg-white">
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Target</th>
-          <th>Type</th>
-          <th>Date</th>
-          <th>Findings</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for scan in scans %}
-        <tr>
-          <td><a href="/scan/{{ scan.id }}">{{ scan.id }}</a></td>
-          <td class="text-break">{{ scan.value }}</td>
-          <td>{{ scan.scan_type }}</td>
-          <td>{{ scan.created_at }}</td>
-          <td>{{ scan.total }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <div class="card shadow-sm">
+      <div class="table-responsive">
+        <table class="table table-striped table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>ID</th>
+              <th>Target</th>
+              <th>Type</th>
+              <th>Date</th>
+              <th>Risk</th>
+              <th>Findings</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for scan in scans %}
+            <tr>
+              <td><a href="/scan/{{ scan.id }}">{{ scan.id }}</a></td>
+              <td class="text-break">{{ scan.value }}</td>
+              <td>{{ scan.scan_type }}</td>
+              <td>{{ scan.created_at }}</td>
+              <td>
+                {% if scan.risk_level %}
+                <span class="badge {% if scan.risk_level == 'Critical Risk' %}bg-danger{% elif scan.risk_level == 'High Risk' %}bg-warning text-dark{% elif scan.risk_level == 'Medium Risk' %}bg-info text-dark{% elif scan.risk_level == 'Low Risk' %}bg-secondary{% else %}bg-success{% endif %}">{{ scan.risk_level }} &middot; {{ scan.risk_score }}</span>
+                {% else %}
+                <span class="badge bg-light text-dark border">N/A</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if scan.total > 0 %}
+                <span class="badge bg-danger">{{ scan.total }}</span>
+                {% else %}
+                <span class="badge bg-success">0</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
     {% else %}
-    <p>No scans yet. <a href="/new">Start a scan</a>.</p>
+    <p>No scans yet. <a class="btn btn-primary btn-sm" href="/new">Start a scan</a></p>
     {% endif %}
   </div>
 </body>

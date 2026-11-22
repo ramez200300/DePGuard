@@ -1,3 +1,4 @@
+import requests
 import typer
 
 import db
@@ -8,16 +9,13 @@ from report import export_report
 app = typer.Typer()
 
 
-# callback فارغ، بدونه يعامل Typer التطبيق كأمر واحد ولا يظهر scan-url كأمر
 @app.callback()
 def main():
-    # ننشئ الجداول إن لم تكن موجودة قبل أي أمر
     db.init_db()
 
 
 @app.command()
 def scan_url(url):
-    # لا نفحص أي رابط قبل تأكيد الملكية أو الإذن
     answer = typer.prompt("Do you own this target or have permission to test it? (y/n)")
     if answer.strip().lower() not in ("y", "yes"):
         print("Scan cancelled.")
@@ -38,7 +36,10 @@ def scan_url(url):
     if not findings:
         print("No findings")
 
-    scan_id = db.save_scan("url", "url", url, findings)
+    score, level = sca.calculate_risk_score(findings)
+    print("Overall risk:", level, "(score " + str(score) + ")")
+    scan_id = db.save_scan("url", "url", url, findings,
+                           risk_score=score, risk_level=level)
     print("Saved scan", scan_id)
 
 
@@ -47,16 +48,20 @@ def scan_manifest(path):
     print("Manifest:", path)
     try:
         items = sca.scan_manifest(path)
-    except Exception:
-        print("Could not read the manifest. Check the path and the file format.")
-        raise typer.Exit()
+    except (ValueError, requests.exceptions.RequestException) as error:
+        typer.echo("Error: " + str(error), err=True)
+        raise typer.Exit(code=1)
 
     for item in items:
         print(item["name"], item["version"], "-", len(item["vulns"]), "vulnerabilities")
-    print("SBOM saved to", sca.save_sbom(items, path))
+    sbom_path = sca.save_sbom(items, path)
+    print("SBOM saved to", sbom_path)
 
     findings = sca.vuln_findings(items)
-    scan_id = db.save_scan("manifest", "sca", path, findings)
+    score, level = sca.calculate_risk_score(findings)
+    print("Overall risk:", level, "(score " + str(score) + ")")
+    scan_id = db.save_scan("manifest", "sca", path, findings, sbom_path,
+                           risk_score=score, risk_level=level)
     print("Saved scan", scan_id)
 
 

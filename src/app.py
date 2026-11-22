@@ -2,6 +2,7 @@ import os
 import shutil
 import tempfile
 
+import requests
 from flask import Flask, redirect, render_template, request, send_file, url_for
 
 import db
@@ -20,7 +21,9 @@ def url_scan(url):
         findings, _ = scanner.scan(url)
     except Exception:
         return None, "Could not fetch the URL. Check the address or your connection."
-    scan_id = db.save_scan("url", "url", url, findings)
+    score, level = sca.calculate_risk_score(findings)
+    scan_id = db.save_scan("url", "url", url, findings,
+                           risk_score=score, risk_level=level)
     return scan_id, ""
 
 
@@ -33,14 +36,15 @@ def manifest_scan(file):
     file.save(path)
     try:
         items = sca.scan_manifest(path)
-    except Exception:
-        items = None
-    shutil.rmtree(folder, ignore_errors=True)
-    if items is None:
-        return None, "Could not read the manifest."
-    sca.save_sbom(items, name)
+    except (ValueError, requests.exceptions.RequestException) as error:
+        return None, str(error)
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    sbom_path = sca.save_sbom(items, name)
     findings = sca.vuln_findings(items)
-    scan_id = db.save_scan("manifest", "sca", name, findings)
+    score, level = sca.calculate_risk_score(findings)
+    scan_id = db.save_scan("manifest", "sca", name, findings, sbom_path,
+                           risk_score=score, risk_level=level)
     return scan_id, ""
 
 
@@ -64,6 +68,21 @@ def download_report(scan_id):
     if not path:
         return "Scan not found", 404
     return send_file(path, as_attachment=True)
+
+
+@app.route("/sbom/<int:scan_id>")
+def download_sbom(scan_id):
+    scan = db.get_scan(scan_id)
+    if not scan or not scan.get("sbom_path"):
+        return "SBOM not found", 404
+    path = scan["sbom_path"]
+    if not os.path.isfile(path):
+        return "SBOM not found", 404
+    try:
+        return send_file(path, as_attachment=True)
+    except OSError:
+        
+        return "SBOM not found", 404
 
 
 @app.route("/new", methods=["GET", "POST"])

@@ -1,7 +1,6 @@
 import os
 import sqlite3
 
-# قاعدة البيانات في مجلد data المجاور لمجلد src
 DB_PATH = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "data", "depguard.db"))
 
 SCHEMA = """
@@ -16,6 +15,9 @@ CREATE TABLE IF NOT EXISTS scans (
     id INTEGER PRIMARY KEY,
     target_id INTEGER NOT NULL,
     scan_type TEXT NOT NULL,         -- 'url' أو 'sca'
+    sbom_path TEXT,
+    risk_score INTEGER,
+    risk_level TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (target_id) REFERENCES targets(id)
 );
@@ -41,19 +43,40 @@ CREATE TABLE IF NOT EXISTS reports (
 
 def connect():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    # row_factory يسمح بقراءة الأعمدة بالاسم مثل row["title"]
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
+SCAN_COLUMNS = {"sbom_path": "TEXT", "risk_score": "INTEGER", "risk_level": "TEXT"}
+
+
+def scan_column_names(conn):
+    rows = conn.execute("PRAGMA table_info(scans)").fetchall()
+    return [row["name"] for row in rows]
+
+
+def add_missing_columns(conn):
+    for name, kind in SCAN_COLUMNS.items():
+        if name in scan_column_names(conn):
+            continue
+        try:
+            conn.execute("ALTER TABLE scans ADD COLUMN " + name + " " + kind)
+        except sqlite3.OperationalError:
+    
+            if name not in scan_column_names(conn):
+                raise
+
+
 def init_db():
-    # IF NOT EXISTS تجعل التشغيل المتكرر آمنًا
     conn = connect()
-    conn.executescript(SCHEMA)
-    conn.commit()
-    conn.close()
+    try:
+        conn.executescript(SCHEMA)
+        add_missing_columns(conn)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_or_create_target(kind, value):
@@ -73,11 +96,12 @@ def get_or_create_target(kind, value):
     return target_id
 
 
-def add_scan(target_id, scan_type):
+def add_scan(target_id, scan_type, sbom_path=None, risk_score=None, risk_level=None):
     conn = connect()
     cursor = conn.execute(
-        "INSERT INTO scans (target_id, scan_type) VALUES (?, ?)",
-        (target_id, scan_type),
+        "INSERT INTO scans (target_id, scan_type, sbom_path, risk_score, risk_level) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (target_id, scan_type, sbom_path, risk_score, risk_level),
     )
     conn.commit()
     scan_id = cursor.lastrowid
@@ -96,9 +120,10 @@ def add_vulnerabilities(scan_id, findings):
     conn.close()
 
 
-def save_scan(kind, scan_type, value, findings):
+def save_scan(kind, scan_type, value, findings, sbom_path=None,
+              risk_score=None, risk_level=None):
     target_id = get_or_create_target(kind, value)
-    scan_id = add_scan(target_id, scan_type)
+    scan_id = add_scan(target_id, scan_type, sbom_path, risk_score, risk_level)
     add_vulnerabilities(scan_id, findings)
     return scan_id
 
@@ -106,7 +131,8 @@ def save_scan(kind, scan_type, value, findings):
 def list_scans():
     conn = connect()
     rows = conn.execute(
-        "SELECT scans.id, scans.scan_type, scans.created_at, targets.value, "
+        "SELECT scans.id, scans.scan_type, scans.created_at, scans.risk_score, "
+        "scans.risk_level, targets.value, "
         "(SELECT COUNT(*) FROM vulnerabilities WHERE scan_id = scans.id) AS total "
         "FROM scans JOIN targets ON targets.id = scans.target_id "
         "ORDER BY scans.id DESC"
@@ -118,7 +144,8 @@ def list_scans():
 def get_scan(scan_id):
     conn = connect()
     row = conn.execute(
-        "SELECT scans.id, scans.scan_type, scans.created_at, targets.value "
+        "SELECT scans.id, scans.scan_type, scans.created_at, scans.sbom_path, "
+        "scans.risk_score, scans.risk_level, targets.value "
         "FROM scans JOIN targets ON targets.id = scans.target_id WHERE scans.id = ?",
         (scan_id,),
     ).fetchone()

@@ -1,0 +1,3 @@
+# Intentionally vulnerable packages for DePGuard SCA testing
+django==2.0.0
+requests==2.0.0

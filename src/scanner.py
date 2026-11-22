@@ -5,7 +5,6 @@ from urllib.parse import urlparse
 
 import requests
 
-# الترويسات الأمنية التي نتحقق منها، ومعنى كل واحدة
 SECURITY_HEADERS = {
     "Content-Security-Policy": "CSP limits which scripts the browser can run",
     "X-Frame-Options": "blocks framing and clickjacking",
@@ -13,10 +12,8 @@ SECURITY_HEADERS = {
     "X-Content-Type-Options": "stops browsers from guessing content types",
 }
 
-# مسارات نتحقق من أنها غير مكشوفة
 PATHS = ["/.git/HEAD", "/.env", "/robots.txt", "/admin"]
 
-# شدة كل نوع من النتائج
 SEVERITY = {
     "Content-Security-Policy": "Medium",
     "X-Frame-Options": "Medium",
@@ -36,14 +33,15 @@ SEVERITY = {
 
 
 def clean_url(url):
-    # نضيف https إذا كتب المستخدم الرابط بدونها
     if not url.startswith("http://") and not url.startswith("https://"):
         return "https://" + url
     return url
 
 
 def fetch(url):
-    return requests.get(url, timeout=10)
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    return response
 
 
 def check_headers(headers):
@@ -95,7 +93,6 @@ def check_tls(url):
     parts = urlparse(url)
     port = parts.port or 443
     context = ssl.create_default_context()
-    # بايثون هنا لا يقرأ شهادات الجذر من ويندوز، فنستخدم ملف الشهادات المرفق مع requests
     context.load_verify_locations(requests.certs.where())
     try:
         with socket.create_connection((parts.hostname, port), timeout=10) as sock:
@@ -119,7 +116,6 @@ def check_tls(url):
 
 
 def random_path_length(url):
-    # طول صفحة مسار عشوائي غير موجود، لنقارن به صفحة /admin
     try:
         return len(requests.get(url.rstrip("/") + "/zxq93k", timeout=10).text)
     except Exception:
@@ -127,13 +123,11 @@ def random_path_length(url):
 
 
 def login_page(response):
-    # صفحة دخول حقيقية فيها حقل كلمة سر، لا مجرد كلمة "login" في القائمة
     body = response.text.lower().replace("'", '"')
     return 'type="password"' in body or 'name="password"' in body
 
 
 def admin_exposed(response, random_length):
-    # /admin "مكشوف" إذا اختلف طوله عن المسار العشوائي ولم يكن صفحة دخول
     if random_length is None or abs(len(response.text) - random_length) < 200:
         return False
     if "text/html" not in response.headers.get("Content-Type", "").lower():
@@ -146,7 +140,7 @@ def check_paths(url):
     random_length = random_path_length(url)
     for path in PATHS:
         try:
-            response = requests.get(url.rstrip("/") + path, timeout=10)
+            response = requests.get(url.rstrip("/") + path, timeout=10, allow_redirects=False)
         except Exception:
             continue
         content_type = response.headers.get("Content-Type", "").lower()
@@ -166,7 +160,11 @@ def check_paths(url):
 
 
 def scan(url):
-    response = fetch(url)
+    try:
+        response = fetch(url)
+    except requests.exceptions.RequestException as error:
+        message = "Could not fetch the target URL. It might be down or returning an error status."
+        raise ValueError(message) from error
     findings = check_headers(response.headers)
     findings += check_cookies(response)
     tls_findings, tls_info = check_tls(url)

@@ -8,12 +8,15 @@ import requests
 OSV_URL = "https://api.osv.dev/v1/query"
 OUTPUT_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "output"))
 
-# ترجمة شدة OSV إلى المستويات الأربعة
+
 SEVERITY_MAP = {"LOW": "Low", "MODERATE": "Medium", "HIGH": "High", "CRITICAL": "Critical"}
 
 
+RISK_WEIGHTS = {"Critical": 10, "High": 5, "Medium": 2, "Low": 1}
+
+
 def split_requirement(text):
-    # نحذف شرط البيئة بعد ; ثم نفصل الاسم عن الإصدار عند أول رمز مقارنة
+    
     text = text.split(";")[0]
     for operator in ("==", ">=", "<=", "~=", "!=", ">", "<", "="):
         if operator in text:
@@ -43,7 +46,7 @@ def parse_package_json(path):
     packages = []
     for section in ("dependencies", "devDependencies"):
         for name, version in data.get(section, {}).items():
-            # نأخذ أول جزء من المدى ونحذف رموز ^ ~ >= <= > < =
+            
             version = version.split(" ")[0].lstrip("^~><= ")
             if not version or not version[0].isdigit():
                 print("Skipped:", name, "- version", version)
@@ -53,9 +56,14 @@ def parse_package_json(path):
 
 
 def parse_manifest(path):
-    if path.endswith("package.json"):
+    if os.path.getsize(path) == 0:
+        raise ValueError("Manifest file is empty or invalid")
+    if not path.endswith("package.json"):
+        return parse_requirements(path)
+    try:
         return parse_package_json(path)
-    return parse_requirements(path)
+    except (OSError, ValueError, TypeError, AttributeError) as error:
+        raise ValueError("Manifest file is empty or invalid") from error
 
 
 def ecosystem(path):
@@ -69,24 +77,32 @@ def query_osv(name, version, eco):
         "package": {"name": name, "ecosystem": eco},
         "version": version,
     }
-    try:
-        response = requests.post(OSV_URL, json=body, timeout=15)
-        response.raise_for_status()
-        return response.json().get("vulns", [])
-    except Exception:
-        print("OSV query failed for", name)
-        return []
+    response = requests.post(OSV_URL, json=body, timeout=15)
+    response.raise_for_status()
+    return response.json().get("vulns", [])
 
 
 def scan_manifest(path):
+    try:
+        packages = parse_manifest(path)
+    except (OSError, ValueError) as error:
+        raise ValueError("Manifest file is empty or invalid") from error
+    if not packages:
+        raise ValueError("Manifest file is empty or invalid")
     eco = ecosystem(path)
     items = []
-    for name, version in parse_manifest(path):
+    for name, version in packages:
+        try:
+            vulns = query_osv(name, version, eco)
+        except requests.exceptions.RequestException as error:
+            message = "OSV API failed for " + name + " " + version + " - scan stopped."
+            print(message)
+            raise requests.exceptions.RequestException(message) from error
         items.append({
             "name": name,
             "version": version,
             "ecosystem": eco,
-            "vulns": query_osv(name, version, eco),
+            "vulns": vulns,
         })
     return items
 
@@ -108,16 +124,25 @@ def vuln_title(vuln, name, version):
 def vuln_description(vuln):
     parts = [vuln.get("summary", "")]
     for score in vuln.get("severity", []):
-        parts.append(score.get("score", ""))
+        value = score.get("score", "")
+       
+        if score.get("type") == "CVSS_V4" or value.upper().startswith("CVSS:4.0"):
+            continue
+        parts.append(value[:50])
     return " | ".join([part for part in parts if part])
 
 
 def vuln_findings(items):
     findings = []
+    seen = set()
     for item in items:
         for vuln in item["vulns"]:
+            title = vuln_title(vuln, item["name"], item["version"])
+            if title in seen:
+                continue
+            seen.add(title)
             findings.append({
-                "title": vuln_title(vuln, item["name"], item["version"]),
+                "title": title,
                 "severity": vuln_severity(vuln),
                 "description": vuln_description(vuln),
             })
@@ -136,16 +161,31 @@ def save_sbom(items, manifest):
             "ecosystem": item["ecosystem"],
             "vulnerabilities": vulns,
         })
+    now = datetime.now()
     data = {
         "manifest": manifest,
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_at": now.isoformat(timespec="seconds"),
         "packages": packages,
     }
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    path = os.path.join(OUTPUT_DIR, "sbom.json")
+    name = os.path.splitext(os.path.basename(manifest))[0]
+    stamp = now.strftime("%Y%m%d_%H%M%S_%f")
+    path = os.path.join(OUTPUT_DIR, "sbom_" + name + "_" + stamp + ".json")
     with open(path, "w", encoding="utf-8") as file:
         json.dump(data, file, indent=2)
     return path
+
+
+def risk_classification(score):
+    for limit, level in ((0, "Safe"), (10, "Low Risk"), (25, "Medium Risk"), (50, "High Risk")):
+        if score <= limit:
+            return level
+    return "Critical Risk"
+
+
+def calculate_risk_score(findings):
+    score = sum(RISK_WEIGHTS.get(finding.get("severity", ""), 0) for finding in findings)
+    return score, risk_classification(score)
 
 
 if __name__ == "__main__":
